@@ -79,5 +79,3 @@ Maintained by [@wangyifan349](https://github.com/wangyifan349)
 
 **Disclaimer:**  
 SecureFileShare is intended for personal, educational, or research use. Always observe local laws and security risks when sharing or receiving files over a network.
-
-gnore` or want further tweaks—just let me know!
