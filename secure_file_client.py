@@ -1,11 +1,25 @@
 """
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
 secure_file_client.py
 A secure file sharing client that connects to the secure_file_server.py.
-- Performs X25519+AES-GCM end-to-end encryption.
-- Displays file lists and enables user to download files by index.
-- All messages and file chunks are encrypted over the network.
-- Protocol: [4-byte length][12-byte nonce][ciphertext] for every message/chunk.
-- Persistent session; user can repeatedly list/download/quit.
+- - Performs X25519+AES-GCM end-to-end encryption.
+- - Displays file lists and enables user to download files by index.
+- - All messages and file chunks are encrypted over the network.
+- - Protocol: [4-byte length][12-byte nonce][ciphertext] for every message/chunk.
+- - Persistent session; user can repeatedly list/download/quit.
+-----BEGIN PGP SIGNATURE-----
+
+iQEzBAEBCAAdFiEEx7jstv8+CLBtLmM+Ob1bwvNo5hkFAmls1nIACgkQOb1bwvNo
+5hkRZggA01VOdqouSD0VLGh1OAlWzaEYKVUCGMLjxR6QWFVRCYEnY+K/niv93H2I
+rQV3UoXxp3aAqjwHReNDCMPzZsUnzQdwZy7T076Tkj/FVpmwLx955Frv86aH157Y
+ijZr13ZtJ2BOzXEwiBxSAenzx6RPqgTZcYijhqTByQwtWLaWXp9m0Uq7O/aSZcan
+vpl5Ce3D6y+l3piOiMF+S5vvJF2k451wMA7hf3a9vwEugJ9FC5AvnIa0jYfsd/an
+JALz/KYcmu7glp/Tha02Sr3/vk359upZGCHindmBUEXMYrc858fGE+hn5ZfyQAQi
+OjK1iP1riodSW6yQlxT/Vhbmdy+hNw==
+=eh4t
+-----END PGP SIGNATURE-----
 """
 import socket                                    # For networking
 import json                                      # For file lists & metadata
