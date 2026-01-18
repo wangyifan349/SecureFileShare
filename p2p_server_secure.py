@@ -1,172 +1,219 @@
-import socket
-import threading
-import os
-import hashlib
-import json
+"""
+secure_file_server.py
 
+A secure multi-threaded file sharing server using X25519 key exchange (ECDH) and AES-GCM symmetric encryption.
+- Shares files in the './share' directory.
+- Handles multiple clients concurrently (thread per client).
+- Each client connection is persistent until 'QUIT' command.
+- All interactions ("LIST", "GET <hash>", file transfers) are fully encrypted blockwise.
+- Network protocol: All messages are [4-byte length][12-byte nonce][ciphertext].
+- Tested with Python 3, cryptography (pip install cryptography).
+
+Author: (Your Name)
+Date: (YYYY-MM-DD)
+"""
+
+import socket                                  # Network communications
+import threading                               # For concurrent clients
+import os                                      # File and path operations
+import hashlib                                 # For SHA256 hashes
+import json                                    # For encoding/decoding file lists/metadata
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import serialization
 
-# 分享目录（可自定义）
-SHARE_DIR = './share'
-# 传输最大块大小
-CHUNK_SIZE = 1024 * 512
+SHARE_DIRECTORY = './share'                    # Path for shared files
+CHUNK_SIZE = 1024 * 512                        # Block/chunk size for file transfer (512 KiB)
 
-# 计算单个文件sha256哈希
-def calc_file_hash(filepath):
-    hasher = hashlib.sha256()
-    with open(filepath, 'rb') as f:
+def calculate_file_hash(file_path):
+    """
+    Calculate SHA256 hash of a file.
+    Args:
+        file_path (str): Full file path.
+    Returns:
+        str: Hexadecimal hash.
+    """
+    hasher = hashlib.sha256()                  # Create a new SHA256 object
+    with open(file_path, 'rb') as file_handle:
         while True:
-            chunk = f.read(CHUNK_SIZE)
+            chunk = file_handle.read(CHUNK_SIZE)       # Read in chunks
             if not chunk:
                 break
-            hasher.update(chunk)
-    return hasher.hexdigest()
+            hasher.update(chunk)                       # Hash chunk
+    return hasher.hexdigest()                  # Get hash as hex string
 
-# 构建所有可分享文件的信息列表
-def build_file_list():
+def collect_file_list():
+    """
+    Gather all regular files in the share directory, with their sizes and hashes.
+    Returns:
+        list: List of dicts with 'name', 'size', 'hash' per file.
+    """
     file_list = []
-    for fname in os.listdir(SHARE_DIR):
-        path = os.path.join(SHARE_DIR, fname)
-        if os.path.isfile(path):
-            # 获取文件大小
-            size = os.path.getsize(path)
-            # 获取hash
-            hashcode = calc_file_hash(path)
-            # 普通append
-            file_info = {}
-            file_info['name'] = fname
-            file_info['size'] = size
-            file_info['hash'] = hashcode
-            file_list.append(file_info)
+    for file_name in os.listdir(SHARE_DIRECTORY):                       # Walk all files in share dir
+        full_path = os.path.join(SHARE_DIRECTORY, file_name)            # Full path
+        if os.path.isfile(full_path):                                   # Only regular files
+            file_size = os.path.getsize(full_path)                      # Get file size in bytes
+            file_hash = calculate_file_hash(full_path)                  # Compute file hash
+            file_info = {}                                             # Dict for file attributes
+            file_info['name'] = file_name                               # File name only, not path
+            file_info['size'] = file_size                               # File size
+            file_info['hash'] = file_hash                               # SHA256 hash
+            file_list.append(file_info)                                 # Add to result list
     return file_list
 
-# 发送一段加密的数据（自带nonce、长度信息）
-def send_encrypted(client, key, plaintext):
-    aesgcm = AESGCM(key)
-    # 12字节随机数
-    nonce = os.urandom(12)
-    # 加密数据
-    ct = aesgcm.encrypt(nonce, plaintext, None)
-    # 发送长度、nonce、密文
-    client.sendall(len(ct).to_bytes(4, 'big'))
-    client.sendall(nonce)
-    client.sendall(ct)
+def send_encrypted_message(sock, key, plain_bytes):
+    """
+    Encrypts a message and sends it over the socket using: [length][nonce][ciphertext].
+    Args:
+        sock (socket.socket): Connected socket object.
+        key (bytes): 32-byte symmetric key (from key exchange).
+        plain_bytes (bytes): Data to encrypt and send.
+    """
+    aesgcm = AESGCM(key)                                               # AES-GCM object with the session key
+    nonce = os.urandom(12)                                             # Generate 12-byte random nonce
+    ciphertext = aesgcm.encrypt(nonce, plain_bytes, None)              # Encrypt plaintext
+    sock.sendall(len(ciphertext).to_bytes(4, 'big'))                   # Send 4-byte ciphertext length
+    sock.sendall(nonce)                                                # Send nonce
+    sock.sendall(ciphertext)                                           # Send the actual ciphertext
 
-# 接收一段加密数据
-def recv_encrypted(client, key):
-    # 读取密文长度
-    length_bytes = client.recv(4)
-    if len(length_bytes) < 4:
-        raise Exception("未能接收完整长度")
-    length = int.from_bytes(length_bytes, 'big')
-    nonce = client.recv(12)
-    if len(nonce) < 12:
-        raise Exception("未能接收完整nonce")
-    # 分块读取密文
-    ct = b''
-    nread = 0
-    while nread < length:
-        chunk = client.recv(length - nread)
-        if not chunk:
-            raise Exception("密文接收中断")
-        ct += chunk
-        nread += len(chunk)
-    aesgcm = AESGCM(key)
-    plaintext = aesgcm.decrypt(nonce, ct, None)
-    return plaintext
+def receive_n_bytes(sock, n):
+    """
+    Receive exactly n bytes from socket. Handles TCP stream fragmentation.
+    Args:
+        sock (socket.socket): Connected socket object.
+        n (int): Number of bytes to read.
+    Returns:
+        bytes: Received bytes.
+    """
+    buffer = b''                                                      # Empty buffer
+    while len(buffer) < n:
+        segment = sock.recv(n - len(buffer))                          # Try to read the rest
+        if not segment:
+            raise Exception("Socket closed unexpectedly")             # If socket closed early
+        buffer += segment                                            # Append to buffer
+    return buffer
 
-# 发送加密的文件内容（分块，每块加密/发送）
-def send_file_encrypted(client, key, filepath):
-    aesgcm = AESGCM(key)
-    with open(filepath, 'rb') as f:
+def receive_encrypted_message(sock, key):
+    """
+    Receives an encrypted message using [length][nonce][ciphertext] protocol and decrypts it.
+    Args:
+        sock (socket.socket): Connected socket object.
+        key (bytes): Session key.
+    Returns:
+        bytes: Decrypted plain data.
+    """
+    length_bytes = receive_n_bytes(sock, 4)                           # Get length prefix
+    msg_length = int.from_bytes(length_bytes, 'big')                  # Length as int
+    nonce = receive_n_bytes(sock, 12)                                 # Always 12 bytes (GCM)
+    ciphertext = receive_n_bytes(sock, msg_length)                    # Ciphertext itself
+    aesgcm = AESGCM(key)                                              # AES-GCM for decrypt
+    plain_bytes = aesgcm.decrypt(nonce, ciphertext, None)             # Decrypt
+    return plain_bytes
+
+def send_file(sock, key, file_path):
+    """
+    Encrypts and sends a file block-wise using the current session key.
+    Args:
+        sock (socket.socket): Connected socket object.
+        key (bytes): Session key.
+        file_path (str): Path of the file to transfer.
+    """
+    aesgcm = AESGCM(key)                                              # AES-GCM for encrypting each chunk
+    with open(file_path, 'rb') as file_handle:
         while True:
-            chunk = f.read(CHUNK_SIZE)
+            chunk = file_handle.read(CHUNK_SIZE)                      # Read chunk
             if not chunk:
                 break
-            nonce = os.urandom(12)
-            ct = aesgcm.encrypt(nonce, chunk, None)
-            # 分别发送长度、nonce、密文
-            client.sendall(len(ct).to_bytes(4, 'big'))
-            client.sendall(nonce)
-            client.sendall(ct)
+            nonce = os.urandom(12)                                    # New nonce per chunk
+            ciphertext = aesgcm.encrypt(nonce, chunk, None)           # Encrypt
+            sock.sendall(len(ciphertext).to_bytes(4, 'big'))          # Send length of ciphertext
+            sock.sendall(nonce)                                       # Send nonce
+            sock.sendall(ciphertext)                                  # Send ciphertext
 
-# 与客户端进行X25519公钥协商
-def do_key_exchange(client):
-    # 服务端生成密钥对
-    sv_private = X25519PrivateKey.generate()
-    sv_public = sv_private.public_key().public_bytes()
-    # 先发送自己的公钥
-    client.sendall(sv_public)
-    # 再接收对方公钥
-    cli_public_bytes = client.recv(32)
-    if len(cli_public_bytes) != 32:
-        raise Exception("客户端公钥长度异常")
-    cli_public = X25519PublicKey.from_public_bytes(cli_public_bytes)
-    # 生成对称密钥（32字节）
-    shared_key = sv_private.exchange(cli_public)
-    return shared_key
+def perform_key_exchange(sock):
+    """
+    Performs X25519 key exchange. Server sends its public key, receives client's public key,
+    and derives the shared symmetric key.
+    Args:
+        sock (socket.socket): Connected socket object.
+    Returns:
+        bytes: 32-byte shared session key.
+    """
+    private_key = X25519PrivateKey.generate()                         # Generate ephemeral private key
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,                          # 'Raw' gives 32 bytes key
+        format=serialization.PublicFormat.Raw
+    )
+    sock.sendall(public_key)                                          # Send server public key to client
+    peer_public_bytes = receive_n_bytes(sock, 32)                     # Receive 32 byte client public key
+    peer_public_key = X25519PublicKey.from_public_bytes(peer_public_bytes)
+    return private_key.exchange(peer_public_key)                      # Return shared secret
 
-# 为每个客户端连接单独服务（多线程）
-def handle_client(client, addr):
-    print(f"[+] 与客户端 {addr} 建立新连接")
-    try:
-        # 密钥协商
-        key = do_key_exchange(client)
-        # 接收（解密）请求
-        req = recv_encrypted(client, key)
-        plain_req = req.decode().strip()
-        if plain_req == "LIST":
-            # 列出所有文件
-            file_list = build_file_list()
-            response = json.dumps(file_list).encode()
-            send_encrypted(client, key, response)
-        elif plain_req.startswith("GET "):
-            # 下载单个文件
-            hash_query = plain_req[4:].strip()
-            found = False
-            files = build_file_list()
-            for fileinfo in files:
-                if fileinfo['hash'] == hash_query:
-                    fname = fileinfo['name']
-                    size = fileinfo['size']
-                    meta_json = {}
-                    meta_json['name'] = fname
-                    meta_json['size'] = size
-                    # 发送文件元信息
-                    send_encrypted(client, key, json.dumps(meta_json).encode())
-                    # 发送文件内容
-                    filepath = os.path.join(SHARE_DIR, fname)
-                    send_file_encrypted(client, key, filepath)
-                    print(f"[+] 已发送文件 {fname} 给 {addr}")
-                    found = True
+def handle_client_connection(sock, address):
+    """
+    Handles all communication (persistent session) with a single client.
+    Args:
+        sock (socket.socket): Connected client socket.
+        address (tuple): (ip, port) tuple for client.
+    """
+    print(f"[+] Connection from {address}")                           # Log incoming connections
+    key = perform_key_exchange(sock)                                  # Key exchange, get session key
+    while True:
+        # Main session loop: accept repeated LIST/GET/QUIT
+        request_bytes = None
+        try:
+            request_bytes = receive_encrypted_message(sock, key)      # Read encrypted client request
+        except Exception:
+            break                                                     # End connection on error (e.g. client disconnected)
+        if not request_bytes:
+            break
+        request = request_bytes.decode().strip()                      # Decode command string
+        if request.upper() == "LIST":
+            file_list = collect_file_list()                           # Get up-to-date file list
+            response_bytes = json.dumps(file_list).encode()           # Encode as JSON
+            send_encrypted_message(sock, key, response_bytes)         # Reply with encrypted list
+        elif request.upper().startswith("GET "):
+            requested_hash = request[4:].strip()                      # Extract requested hash
+            file_found = False
+            file_list = collect_file_list()                           # Always current
+            for file_info in file_list:                               # Loop for match (not in comp)
+                if file_info['hash'] == requested_hash:
+                    file_name = file_info['name']
+                    file_size = file_info['size']
+                    meta_info = {}
+                    meta_info['name'] = file_name                     # File name for download
+                    meta_info['size'] = file_size                     # File size for download
+                    send_encrypted_message(sock, key, json.dumps(meta_info).encode())  # Send meta first
+                    full_path = os.path.join(SHARE_DIRECTORY, file_name)
+                    send_file(sock, key, full_path)                   # Then encrypted file data
+                    print(f"[+] Sent file {file_name} to {address}")  # Log file transfer
+                    file_found = True
                     break
-            if not found:
-                send_encrypted(client, key, b"ERR: File Not Found")
+            if not file_found:                                        # Hash did not match any file
+                send_encrypted_message(sock, key, b"ERR: File Not Found")
+        elif request.upper() == "QUIT":
+            print(f"[=] {address} closed connection")
+            break                                                     # End session on client quit
         else:
-            send_encrypted(client, key, b"ERR: Unknown request")
-    except Exception as e:
-        print(f"[-] 连接 {addr} 处理异常:", str(e))
-    finally:
-        client.close()
-        print(f"[=] 关闭与 {addr} 的连接")
+            send_encrypted_message(sock, key, b"ERR: Unknown request")# Reply to invalid requests
+    sock.close()                                                      # Cleanly close connection
+    print(f"[=] Connection ended: {address}")                         # Log
 
 def main():
-    # 确保分享目录存在
-    if not os.path.exists(SHARE_DIR):
-        os.makedirs(SHARE_DIR)
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # 允许端口复用，避免重启时Address already in use
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('0.0.0.0', 5002))
-    server.listen(8)
-    print("【P2P安全文件分享服务】已启动，监听5002端口")
-    print("请将要分享的文件放在 share/ 目录下 ...")
+    # Entry point. Prepares directory, starts listener loop, accepts connections, handles each in thread.
+    if not os.path.exists(SHARE_DIRECTORY):                           # Create directory if missing
+        os.makedirs(SHARE_DIRECTORY)
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Create TCP socket
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind(('0.0.0.0', 5002))                             # Listen on all interfaces
+    server_socket.listen(8)                                           # Allow up to 8 queued connections
+    print("Secure file sharing server started on port 5002")
+    print("Place files you want to share in the share/ folder.")
     while True:
-        client, addr = server.accept()
-        t = threading.Thread(target=handle_client, args=(client, addr))
-        t.daemon = True
-        t.start()
+        client_socket, client_address = server_socket.accept()        # Wait for a client connection
+        thread = threading.Thread(target=handle_client_connection, args=(client_socket, client_address))
+        thread.daemon = True                                         # Thread dies with main program
+        thread.start()                                               # Start thread per client
 
 if __name__ == '__main__':
     main()
