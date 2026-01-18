@@ -1,16 +1,26 @@
 """
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
 secure_file_server.py
-
 A secure multi-threaded file sharing server using X25519 key exchange (ECDH) and AES-GCM symmetric encryption.
-- Shares files in the './share' directory.
-- Handles multiple clients concurrently (thread per client).
-- Each client connection is persistent until 'QUIT' command.
-- All interactions ("LIST", "GET <hash>", file transfers) are fully encrypted blockwise.
-- Network protocol: All messages are [4-byte length][12-byte nonce][ciphertext].
-- Tested with Python 3, cryptography (pip install cryptography).
+- - Shares files in the './share' directory.
+- - Handles multiple clients concurrently (thread per client).
+- - Each client connection is persistent until 'QUIT' command.
+- - All interactions ("LIST", "GET <hash>", file transfers) are fully encrypted blockwise.
+- - Network protocol: All messages are [4-byte length][12-byte nonce][ciphertext].
+- - Tested with Python 3, cryptography (pip install cryptography).
+-----BEGIN PGP SIGNATURE-----
 
-Author: (Your Name)
-Date: (YYYY-MM-DD)
+iQEzBAEBCAAdFiEEx7jstv8+CLBtLmM+Ob1bwvNo5hkFAmls1kEACgkQOb1bwvNo
+5hnk7wgAlAHHETfp0hoKwBHm48ZeoJa6DBPbSVl1UcB98LhClF88NghE/wvGk+yT
+P7CWlwsBiefGdIQzxW2GggOhucFv1zdzqIVSuwkIhycFKPbFaY3544HNS0tV+aEe
+7e1u9eGKZltsB6/e5dXoqt3hqMCcZZyoF6pmReXYNjhOEQEwR+Y0PfmwISjQY9st
+/Ac5tI8HIky9hhLGxURMau80rJQDE2nuP46j0fqsTkOam6xex2tiA1yq85OSq0n5
+gmLK9ao3cPDphfeI21pOAElMesAcdN074jmcPH6OuCHkfk0XlZU4/jxgSW5R/rFi
+nWfJwtQMNLhjWH6yl1ivSJcPDewxXg==
+=HYPf
+-----END PGP SIGNATURE-----
 """
 
 import socket                                  # Network communications
